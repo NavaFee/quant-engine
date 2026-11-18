@@ -8,6 +8,7 @@ from quant_engine.backtest import (
     calculate_metrics,
     run_backtest,
 )
+from quant_engine.data import BAR_DTYPES
 
 DAY = 86_400_000
 
@@ -112,6 +113,53 @@ def test_multiple_buys_belong_to_one_round():
     metrics = calculate_metrics(result, 100, "1d")
     assert metrics["trade_count"] == 1
     assert metrics["win_rate"] == 1  # 54 - 1 - 11 - 41 = 1
+
+
+@pytest.mark.parametrize("first_weight", [0.3, 1.0])
+@pytest.mark.parametrize("initial_cash", [10000.0, 1e-8])
+@pytest.mark.parametrize("price_change", [0.0, 3e-9, -3e-9])
+def test_engine_partial_rounds_distinguish_roundoff_from_small_pnl(
+    first_weight, initial_cash, price_change
+):
+    # Four fills at 30000; only the final 20% sale changes price. At C=10000,
+    # +/-3e-9 in price gives +/-2e-10 in genuine PnL; at C=1e-8, +/-2e-22.
+    # Both exceed arithmetic roundoff but are smaller than fixed 1e-9 cutoffs.
+    bars = pd.DataFrame(
+        [
+            [i * DAY, *([30000.0 + (price_change if i == 4 else 0)] * 4), 1.0]
+            for i in range(5)
+        ],
+        columns=BAR_DTYPES,
+    ).astype(BAR_DTYPES)
+    result = run_backtest(
+        bars,
+        pd.Series([first_weight, 0.7, 0.2, 0.0, 0.0], dtype="float64"),
+        BacktestConfig(initial_cash),
+    )
+    assert len(result.trades) == 4
+    assert result.positions.qty.iloc[-1] == 0
+    metrics = calculate_metrics(result, initial_cash, "1d")
+    assert metrics["trade_count"] == 1
+    assert metrics["win_rate"] == (1.0 if price_change > 0 else 0.0)
+    assert metrics["profit_factor"] == (0.0 if price_change < 0 else None)
+
+
+def test_break_even_round_does_not_create_profit_or_loss_in_mixed_statistics():
+    prices = [30000.0] * 5 + [30000.0, 33000.0, 30000.0, 28500.0]
+    bars = pd.DataFrame(
+        [[i * DAY, *([price] * 4), 1.0] for i, price in enumerate(prices)],
+        columns=BAR_DTYPES,
+    ).astype(BAR_DTYPES)
+    # A split break-even round, then +1000, then -550; win rate=1/3, PF=20/11.
+    result = run_backtest(
+        bars,
+        pd.Series([0.3, 0.7, 0.2, 0, 1, 0, 1, 0, 0], dtype="float64"),
+        BacktestConfig(10000),
+    )
+    metrics = calculate_metrics(result, 10000, "1d")
+    assert metrics["trade_count"] == 3
+    assert metrics["win_rate"] == pytest.approx(1 / 3, rel=0, abs=1e-12)
+    assert metrics["profit_factor"] == pytest.approx(20 / 11, rel=0, abs=1e-12)
 
 
 @pytest.mark.parametrize("length", [0, 1, 2, 3])

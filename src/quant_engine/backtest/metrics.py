@@ -81,7 +81,7 @@ def _validate_result(result: BacktestResult) -> None:
 
 def _completed_pnl(result: BacktestResult) -> list[float]:
     fills = {row.ts: row for row in result.trades.itertuples(index=False)}
-    completed, flows = [], []
+    completed, flows, roundoff = [], [], []
     previous_qty = 0.0
     for row in result.positions.itertuples(index=False):
         fill = fills.get(row.ts)
@@ -96,16 +96,19 @@ def _completed_pnl(result: BacktestResult) -> list[float]:
             ):
                 raise ValueError("Fill quantities must match positions")
             notional = _finite(fill.price * fill.qty)
-            flows.append(
-                _finite((-notional if fill.side == "buy" else notional) - fill.fee)
-            )
+            flow = _finite((-notional if fill.side == "buy" else notional) - fill.fee)
+            flows.append(flow)
+            # Budget one ULP for each rounded multiplication and fee addition.
+            roundoff.append(ulp(notional) + ulp(flow))
         elif row.qty != previous_qty:
             raise ValueError("Position changes require a fill")
         if previous_qty > 0 and row.qty == 0:
             if fill.side != "sell":
                 raise ValueError("A holding round must finish with a sell")
-            completed.append(_finite(fsum(flows)))
-            flows = []
+            pnl = _finite(fsum(flows))
+            tolerance = _finite(fsum(roundoff) + ulp(pnl))
+            completed.append(0.0 if abs(pnl) <= tolerance else pnl)
+            flows, roundoff = [], []
         previous_qty = row.qty
     return completed
 
