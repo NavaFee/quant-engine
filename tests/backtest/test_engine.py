@@ -233,3 +233,30 @@ def test_invalid_config_type_and_arithmetic_overflow(bars):
     bars = bars.iloc[:3].assign(open=1.0, close=1e308)
     with pytest.raises(ValueError, match="arithmetic"):
         run_backtest(bars, targets(bars, 1), BacktestConfig(1000))
+
+
+@pytest.mark.parametrize(
+    "cash,price,fee,slippage",
+    [
+        (1000, 1.797e308, 10, 0),  # Finite fill price, overflowing unit cash cost.
+        (1000, 1.797e308, 0, 10),  # Slippage overflows the fill price itself.
+        (1000, 1e-308, 0, 0),  # Finite denominator, overflowing quantity.
+        (1e-300, 1e308, 0, 0),  # Quantity underflows to zero; never emit a zero fill.
+    ],
+)
+def test_unrepresentable_trade_arithmetic(bars, cash, price, fee, slippage):
+    bars = bars.iloc[:2].assign(open=price, high=price, low=price, close=price)
+    with pytest.raises(ValueError, match="arithmetic"):
+        run_backtest(bars, targets(bars, 1), BacktestConfig(cash, fee, slippage))
+
+
+def test_large_finite_price_with_representable_trade(bars):
+    bars = bars.iloc[:2].assign(
+        open=1.797e308, high=1.797e308, low=1.797e308, close=1.797e308
+    )
+    result = run_backtest(bars, targets(bars, 1), BacktestConfig(1000))
+    assert len(result.trades) == 1 and result.trades.qty.iloc[0] > 0
+    assert result.positions.cash.iloc[-1] == 0
+    assert result.equity.equity.tolist() == pytest.approx(
+        [1000, 1000], rel=0, abs=1e-10
+    )

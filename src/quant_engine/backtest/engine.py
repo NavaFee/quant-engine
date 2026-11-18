@@ -9,6 +9,14 @@ from quant_engine.data import validate_bars
 from .models import BacktestConfig, BacktestResult
 
 
+def _positive_finite(value: float) -> float:
+    if not isfinite(value) or value <= 0:
+        raise ValueError(
+            "Backtest arithmetic produced a non-finite or nonpositive trade value"
+        )
+    return value
+
+
 def _nonnegative(value: float, scale: float) -> float:
     if not isfinite(value) or value < -8 * ulp(scale):
         raise ValueError(
@@ -26,15 +34,12 @@ def _rebalance(cash, qty, opening, weight, fee_rate, slippage):
     if abs(delta) <= 8 * ulp(max(wanted_cash, retained_value)):
         return cash, qty, None
     direction = 1 if delta > 0 else -1
-    price = opening * (1 + direction * slippage)
-    unit_cash = price * (1 + direction * fee_rate)
+    price = _positive_finite(opening * (1 + direction * slippage))
+    unit_cash = _positive_finite(price * (1 + direction * fee_rate))
     # Solve q' * open / (cash' + q' * open) = weight, including costs.
-    amount = (
-        qty
-        if weight == 0
-        else abs(delta) / ((1 - weight) * opening + weight * unit_cash)
-    )
-    notional = amount * price
+    denominator = _positive_finite((1 - weight) * opening + weight * unit_cash)
+    amount = _positive_finite(qty if weight == 0 else abs(delta) / denominator)
+    notional = _positive_finite(amount * price)
     fee = notional * fee_rate
     cash_scale = max(cash, notional, fee)
     cash = _nonnegative(cash - direction * notional - fee, cash_scale)
